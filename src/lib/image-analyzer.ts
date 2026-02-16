@@ -1,108 +1,93 @@
-import { getOpenAI } from "./openai";
+import { generateObject } from "ai";
+import { z } from "zod";
+import { getVisionModel } from "./openai";
 import type { ImageAnalysisResult } from "@/types";
 import * as fs from "fs";
 import * as path from "path";
+
+// Zod schema for structured image analysis
+const imageAnalysisSchema = z.object({
+  description: z
+    .string()
+    .describe("A detailed description of the image content, scene, and composition"),
+  keywords: z
+    .array(z.string())
+    .describe("15-25 searchable keywords for finding similar images on Pinterest or stock sites"),
+  colors: z.array(z.string()).describe("Dominant colors in the image"),
+  objects: z.array(z.string()).describe("All identifiable objects and elements in the image"),
+  mood: z
+    .string()
+    .describe(
+      "The overall mood/feeling: energetic, calm, dramatic, warm, cold, professional, playful, etc."
+    ),
+  style: z
+    .string()
+    .describe(
+      "The visual style: photography, illustration, flat-design, 3d-render, minimalist, vintage, etc."
+    ),
+});
 
 export async function analyzeImage(imagePath: string): Promise<ImageAnalysisResult> {
   const absolutePath = path.resolve(imagePath);
   const imageBuffer = fs.readFileSync(absolutePath);
   const base64 = imageBuffer.toString("base64");
   const ext = path.extname(imagePath).toLowerCase().replace(".", "");
-  const mimeType = ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
+  const mimeType =
+    ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg";
 
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
+  const { object } = await generateObject({
+    model: getVisionModel(),
+    schema: imageAnalysisSchema,
     messages: [
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: `Analyze this image in detail. Respond in JSON with exactly these fields:
-{
-  "description": "A detailed description of the image content, scene, and composition",
-  "keywords": ["keyword1", "keyword2", ...] (15-25 searchable keywords for finding similar images),
-  "colors": ["color1", "color2", ...] (dominant colors),
-  "objects": ["object1", "object2", ...] (all identifiable objects/elements),
-  "mood": "the overall mood/feeling (e.g. energetic, calm, dramatic, warm, cold, professional, playful)",
-  "style": "the visual style (e.g. photography, illustration, flat-design, 3d-render, minimalist, vintage)"
-}`,
+            text: "Analyze this image in detail. Extract keywords that would be useful for searching similar images on Pinterest or stock photo sites.",
           },
           {
-            type: "image_url",
-            image_url: {
-              url: `data:${mimeType};base64,${base64}`,
-              detail: "low",
-            },
+            type: "image",
+            image: `data:${mimeType};base64,${base64}`,
           },
         ],
       },
     ],
-    response_format: { type: "json_object" },
-    max_tokens: 800,
     temperature: 0.3,
   });
 
-  const result = JSON.parse(response.choices[0].message.content || "{}");
-  return {
-    description: result.description || "",
-    keywords: result.keywords || [],
-    colors: result.colors || [],
-    objects: result.objects || [],
-    mood: result.mood || "neutral",
-    style: result.style || "photography",
-  };
+  return object;
 }
 
 export async function analyzeImageFromUrl(imageUrl: string): Promise<ImageAnalysisResult> {
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
+  const { object } = await generateObject({
+    model: getVisionModel(),
+    schema: imageAnalysisSchema,
     messages: [
       {
         role: "user",
         content: [
           {
             type: "text",
-            text: `Analyze this image in detail. Respond in JSON with exactly these fields:
-{
-  "description": "A detailed description of the image content, scene, and composition",
-  "keywords": ["keyword1", "keyword2", ...] (15-25 searchable keywords for finding similar images),
-  "colors": ["color1", "color2", ...] (dominant colors),
-  "objects": ["object1", "object2", ...] (all identifiable objects/elements),
-  "mood": "the overall mood/feeling (e.g. energetic, calm, dramatic, warm, cold, professional, playful)",
-  "style": "the visual style (e.g. photography, illustration, flat-design, 3d-render, minimalist, vintage)"
-}`,
+            text: "Analyze this image in detail. Extract keywords that would be useful for searching similar images on Pinterest or stock photo sites.",
           },
           {
-            type: "image_url",
-            image_url: {
-              url: imageUrl,
-              detail: "low",
-            },
+            type: "image",
+            image: new URL(imageUrl),
           },
         ],
       },
     ],
-    response_format: { type: "json_object" },
-    max_tokens: 800,
     temperature: 0.3,
   });
 
-  const result = JSON.parse(response.choices[0].message.content || "{}");
-  return {
-    description: result.description || "",
-    keywords: result.keywords || [],
-    colors: result.colors || [],
-    objects: result.objects || [],
-    mood: result.mood || "neutral",
-    style: result.style || "photography",
-  };
+  return object;
 }
 
-export async function findSimilarByKeywords(
+export function findSimilarByKeywords(
   targetKeywords: string[],
   allImages: { id: string; keywords: string[] }[]
-): Promise<{ id: string; score: number }[]> {
+): { id: string; score: number }[] {
   const targetSet = new Set(targetKeywords.map((k) => k.toLowerCase()));
 
   const scored = allImages.map((img) => {

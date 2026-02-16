@@ -1,41 +1,51 @@
-import { getOpenAI } from "./openai";
+import { generateObject, generateText } from "ai";
+import { z } from "zod";
+import { getModel } from "./openai";
 import type { HeadlineAnalysisResult, BatchAnalysisResult } from "@/types";
+
+// Zod schemas for structured AI output
+const headlineAnalysisSchema = z.object({
+  sentiment: z.enum(["positive", "negative", "neutral"]),
+  emotion: z.enum([
+    "curiosity",
+    "fear",
+    "urgency",
+    "excitement",
+    "trust",
+    "surprise",
+    "desire",
+    "anger",
+  ]),
+  powerWords: z.array(z.string()).describe("Power/trigger words found in the headline"),
+  structure: z
+    .string()
+    .describe(
+      'The headline pattern, e.g. "How to...", "X ways to...", "Question", "Number list", "Command/CTA", "Statement", "Comparison", "Testimonial", "News"'
+    ),
+  score: z.number().min(1).max(10).describe("Copywriting effectiveness score 1-10"),
+  tags: z.array(z.string()).max(5).describe("Relevant topic tags"),
+});
+
+const bulkAnalysisSchema = z.object({
+  analyses: z.array(headlineAnalysisSchema),
+});
+
+const headlinesOutputSchema = z.object({
+  headlines: z.array(z.string()),
+});
 
 export async function analyzeHeadline(
   headline: string,
   copy?: string
 ): Promise<HeadlineAnalysisResult> {
-  const prompt = `Analyze this headline${copy ? " and its copy" : ""} for copywriting effectiveness.
-
-Headline: "${headline}"
-${copy ? `Copy: "${copy.slice(0, 500)}"` : ""}
-
-Respond in JSON with exactly these fields:
-{
-  "sentiment": "positive" | "negative" | "neutral",
-  "emotion": one of "curiosity", "fear", "urgency", "excitement", "trust", "surprise", "desire", "anger",
-  "powerWords": [list of power/trigger words found in the headline],
-  "structure": the pattern like "How to...", "X ways to...", "Question", "Number list", "Command/CTA", "Statement", "Comparison", "Testimonial", "News",
-  "score": 1-10 effectiveness score,
-  "tags": [relevant topic tags, max 5]
-}`;
-
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
+  const { object } = await generateObject({
+    model: getModel(),
+    schema: headlineAnalysisSchema,
+    prompt: `Analyze this headline${copy ? " and its copy" : ""} for copywriting effectiveness.\n\nHeadline: "${headline}"${copy ? `\nCopy: "${copy.slice(0, 500)}"` : ""}`,
     temperature: 0.3,
   });
 
-  const result = JSON.parse(response.choices[0].message.content || "{}");
-  return {
-    sentiment: result.sentiment || "neutral",
-    emotion: result.emotion || "curiosity",
-    powerWords: result.powerWords || [],
-    structure: result.structure || "Statement",
-    score: result.score || 5,
-    tags: result.tags || [],
-  };
+  return object;
 }
 
 export async function analyzeHeadlineBatch(
@@ -45,7 +55,6 @@ export async function analyzeHeadlineBatch(
   const pLimit = (await import("p-limit")).default;
   const limit = pLimit(concurrency);
 
-  // Process in chunks to avoid rate limits - analyze up to 10 at once with a single API call
   const chunkSize = 10;
   const results: HeadlineAnalysisResult[] = [];
 
@@ -70,41 +79,16 @@ async function analyzeBulkHeadlines(
     )
     .join("\n");
 
-  const prompt = `Analyze these ${headlines.length} headlines for copywriting effectiveness.
-
-${headlineList}
-
-Respond in JSON with an "analyses" array, one entry per headline, each with:
-{
-  "sentiment": "positive" | "negative" | "neutral",
-  "emotion": one of "curiosity", "fear", "urgency", "excitement", "trust", "surprise", "desire", "anger",
-  "powerWords": [power/trigger words found],
-  "structure": pattern like "How to...", "X ways to...", "Question", "Number list", "Command/CTA", "Statement", "Comparison", "Testimonial", "News",
-  "score": 1-10 effectiveness score,
-  "tags": [topic tags, max 5]
-}`;
-
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [{ role: "user", content: prompt }],
-    response_format: { type: "json_object" },
+  const { object } = await generateObject({
+    model: getModel(),
+    schema: bulkAnalysisSchema,
+    prompt: `Analyze these ${headlines.length} headlines for copywriting effectiveness. Return one analysis per headline in order.\n\n${headlineList}`,
     temperature: 0.3,
   });
 
-  const result = JSON.parse(response.choices[0].message.content || '{"analyses":[]}');
-  const analyses: HeadlineAnalysisResult[] = (result.analyses || []).map(
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (a: any) => ({
-      sentiment: a.sentiment || "neutral",
-      emotion: a.emotion || "curiosity",
-      powerWords: a.powerWords || [],
-      structure: a.structure || "Statement",
-      score: a.score || 5,
-      tags: a.tags || [],
-    })
-  );
+  const analyses = object.analyses;
 
-  // Pad if API returned fewer results
+  // Pad if model returned fewer results
   while (analyses.length < headlines.length) {
     analyses.push({
       sentiment: "neutral",
@@ -129,21 +113,15 @@ export function computeBatchAnalysis(
   let totalScore = 0;
 
   for (const { analysis } of headlineResults) {
-    // Patterns
     patternCounts[analysis.structure] = (patternCounts[analysis.structure] || 0) + 1;
 
-    // Power words
     for (const word of analysis.powerWords) {
       const lower = word.toLowerCase();
       wordCounts[lower] = (wordCounts[lower] || 0) + 1;
     }
 
-    // Sentiment
     sentimentCounts[analysis.sentiment] = (sentimentCounts[analysis.sentiment] || 0) + 1;
-
-    // Emotion
     emotionCounts[analysis.emotion] = (emotionCounts[analysis.emotion] || 0) + 1;
-
     totalScore += analysis.score;
   }
 
@@ -170,12 +148,9 @@ export function computeBatchAnalysis(
 export async function generateInsights(
   stats: Omit<BatchAnalysisResult, "insights">
 ): Promise<string> {
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "user",
-        content: `Based on this analysis of ${stats.totalHeadlines} headlines, provide actionable copywriting insights:
+  const { text } = await generateText({
+    model: getModel(),
+    prompt: `Based on this analysis of ${stats.totalHeadlines} headlines, provide actionable copywriting insights:
 
 Top patterns: ${JSON.stringify(stats.topPatterns)}
 Top power words: ${JSON.stringify(stats.topPowerWords)}
@@ -184,13 +159,11 @@ Emotion distribution: ${JSON.stringify(stats.emotionDistribution)}
 Average score: ${stats.avgScore.toFixed(1)}/10
 
 Write 3-5 key insights about what makes these headlines effective, what patterns dominate, and recommendations for writing new headlines based on these patterns. Be specific and data-driven.`,
-      },
-    ],
     temperature: 0.7,
-    max_tokens: 1000,
+    maxOutputTokens: 1000,
   });
 
-  return response.choices[0].message.content || "No insights generated.";
+  return text || "No insights generated.";
 }
 
 export async function generateHeadlines(
@@ -208,21 +181,12 @@ export async function generateHeadlines(
     : "";
   const styleContext = style ? `\nStyle/tone: ${style}` : "";
 
-  const response = await getOpenAI().chat.completions.create({
-    model: "gpt-4o-mini",
-    messages: [
-      {
-        role: "user",
-        content: `Generate ${count} high-performing headlines for this topic: "${topic}"
-${patternContext}${wordContext}${styleContext}
-
-Respond in JSON: { "headlines": ["headline1", "headline2", ...] }`,
-      },
-    ],
-    response_format: { type: "json_object" },
+  const { object } = await generateObject({
+    model: getModel(),
+    schema: headlinesOutputSchema,
+    prompt: `Generate ${count} high-performing headlines for this topic: "${topic}"${patternContext}${wordContext}${styleContext}`,
     temperature: 0.8,
   });
 
-  const result = JSON.parse(response.choices[0].message.content || '{"headlines":[]}');
-  return result.headlines || [];
+  return object.headlines;
 }

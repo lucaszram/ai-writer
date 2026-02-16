@@ -36,17 +36,31 @@ interface PinterestResult {
   description: string;
 }
 
+interface SearchResultData {
+  keywords: string[];
+  expandedKeywords: string[];
+  pinterestQuery: string;
+  pinterest: PinterestResult[];
+  local: {
+    id: string;
+    score: number;
+    filepath: string;
+    filename: string;
+    description: string | null;
+    keywords: string[];
+    mood: string | null;
+    style: string | null;
+  }[];
+}
+
 export default function ImagesPage() {
   const [collections, setCollections] = useState<Collection[]>([]);
   const [selectedCollection, setSelectedCollection] = useState<string | null>(null);
   const [images, setImages] = useState<ImageRecord[]>([]);
   const [slideshows, setSlideshows] = useState<SlideshowRecord[]>([]);
   const [selectedSlideshow, setSelectedSlideshow] = useState<SlideshowRecord | null>(null);
-  const [searchResults, setSearchResults] = useState<{
-    pinterest?: PinterestResult[];
-    similar?: { id: string; score: number; image?: ImageRecord }[];
-  } | null>(null);
-  const [searchKeywords, setSearchKeywords] = useState("");
+  const [searchResults, setSearchResults] = useState<SearchResultData | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
   const [collectionName, setCollectionName] = useState("");
   const [slideshowName, setSlideshowName] = useState("");
   const [loading, setLoading] = useState("");
@@ -157,26 +171,27 @@ export default function ImagesPage() {
   };
 
   const handleSearch = async () => {
-    if (!searchKeywords.trim()) return;
+    if (!searchQuery.trim()) return;
 
     setLoading("searching");
     setError("");
 
     try {
-      const keywords = searchKeywords
-        .split(",")
-        .map((k) => k.trim())
-        .filter((k) => k);
+      // AI interprets the query - can be keywords or natural language
       const res = await fetch("/api/images/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ keywords, source: "both" }),
+        body: JSON.stringify({
+          query: searchQuery,
+          source: "both",
+          collectionId: selectedCollection || undefined,
+        }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      setSearchResults(data.results);
+      setSearchResults(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
@@ -192,13 +207,17 @@ export default function ImagesPage() {
       const res = await fetch("/api/images/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageId, source: "both" }),
+        body: JSON.stringify({
+          imageId,
+          source: "both",
+          collectionId: selectedCollection || undefined,
+        }),
       });
 
       const data = await res.json();
       if (!res.ok) throw new Error(data.error);
 
-      setSearchResults(data.results);
+      setSearchResults(data);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Search failed");
     } finally {
@@ -372,15 +391,20 @@ export default function ImagesPage() {
         </section>
       )}
 
-      {/* Search */}
+      {/* AI Search */}
       <section className="border border-gray-800 rounded-lg p-6 space-y-4">
-        <h3 className="text-xl font-semibold">3. Search (Pinterest + Local)</h3>
+        <h3 className="text-xl font-semibold">3. AI Image Search</h3>
+        <p className="text-gray-400 text-sm">
+          Search with natural language or keywords. AI expands your query and searches
+          both Pinterest and your local collection.
+        </p>
         <div className="flex gap-3">
           <input
             type="text"
-            value={searchKeywords}
-            onChange={(e) => setSearchKeywords(e.target.value)}
-            placeholder="Keywords (comma-separated)"
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+            placeholder="e.g. 'sunset on a tropical beach with palm trees' or 'fitness, gym, motivation'"
             className="flex-1 bg-gray-900 border border-gray-700 rounded px-4 py-2 focus:outline-none focus:border-blue-500"
           />
           <button
@@ -394,9 +418,33 @@ export default function ImagesPage() {
 
         {searchResults && (
           <div className="space-y-4">
-            {searchResults.pinterest && searchResults.pinterest.length > 0 && (
+            {/* AI-expanded keywords */}
+            <div className="bg-gray-900 p-3 rounded">
+              <p className="text-xs text-gray-500 mb-1">
+                Pinterest query: <span className="text-red-400">{searchResults.pinterestQuery}</span>
+              </p>
+              <div className="flex flex-wrap gap-1">
+                {searchResults.expandedKeywords.slice(0, 20).map((kw) => (
+                  <span
+                    key={kw}
+                    className={`text-xs px-2 py-0.5 rounded ${
+                      searchResults.keywords.includes(kw)
+                        ? "bg-blue-900 text-blue-300"
+                        : "bg-gray-800 text-gray-400"
+                    }`}
+                  >
+                    {kw}
+                  </span>
+                ))}
+              </div>
+            </div>
+
+            {/* Pinterest results */}
+            {searchResults.pinterest.length > 0 && (
               <div>
-                <h4 className="font-semibold mb-2">Pinterest Results</h4>
+                <h4 className="font-semibold mb-2">
+                  Pinterest ({searchResults.pinterest.length})
+                </h4>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
                   {searchResults.pinterest.map((pin, i) => (
                     <a
@@ -421,32 +469,42 @@ export default function ImagesPage() {
               </div>
             )}
 
-            {searchResults.similar && searchResults.similar.length > 0 && (
+            {/* Local collection results */}
+            {searchResults.local.length > 0 && (
               <div>
-                <h4 className="font-semibold mb-2">Similar in Collection</h4>
+                <h4 className="font-semibold mb-2">
+                  From Collection ({searchResults.local.length})
+                </h4>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  {searchResults.similar
-                    .filter((s) => s.score > 0)
-                    .slice(0, 12)
-                    .map((s) => (
-                      <div key={s.id} className="bg-gray-900 rounded overflow-hidden">
-                        {s.image && (
-                          // eslint-disable-next-line @next/next/no-img-element
-                          <img
-                            src={(s.image as ImageRecord).filepath}
-                            alt=""
-                            className="w-full h-24 object-cover"
-                          />
-                        )}
-                        <div className="p-2">
-                          <div className="text-xs text-gray-400">
-                            Match: {(s.score * 100).toFixed(0)}%
-                          </div>
+                  {searchResults.local.map((img) => (
+                    <div key={img.id} className="bg-gray-900 rounded overflow-hidden group relative">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={img.filepath}
+                        alt={img.description || img.filename}
+                        className="w-full h-28 object-cover"
+                      />
+                      <div className="p-2">
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs text-green-400 font-mono">
+                            {(img.score * 100).toFixed(0)}% match
+                          </span>
+                          {img.mood && (
+                            <span className="text-xs text-purple-400">{img.mood}</span>
+                          )}
                         </div>
+                        <p className="text-xs text-gray-400 line-clamp-2">
+                          {img.description?.slice(0, 80)}
+                        </p>
                       </div>
-                    ))}
+                    </div>
+                  ))}
                 </div>
               </div>
+            )}
+
+            {searchResults.pinterest.length === 0 && searchResults.local.length === 0 && (
+              <p className="text-gray-500 text-center py-4">No results found</p>
             )}
           </div>
         )}
