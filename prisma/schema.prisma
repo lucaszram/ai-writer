@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ==========================================
+// HEADLINE ANALYZER MODELS
+// ==========================================
+
+model HeadlineBatch {
+  id        String   @id @default(cuid())
+  name      String
+  status    String   @default("pending") // pending, processing, completed, failed
+  totalUrls Int      @default(0)
+  processed Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  headlines Headline[]
+}
+
+model Headline {
+  id          String   @id @default(cuid())
+  batchId     String
+  batch       HeadlineBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  sourceUrl   String
+  headline    String
+  subheadline String?
+  copy        String?
+  metaTitle   String?
+  metaDesc    String?
+  ogTitle     String?
+  // AI analysis fields
+  sentiment   String?
+  emotion     String?
+  powerWords  String?  // JSON array stored as string
+  structure   String?  // e.g. "How to...", "X ways to...", "Question"
+  score       Float?
+  tags        String?  // JSON array stored as string
+  createdAt   DateTime @default(now())
+
+  @@index([batchId])
+  @@index([structure])
+}
+
+model HeadlineAnalysis {
+  id              String   @id @default(cuid())
+  batchId         String   @unique
+  totalHeadlines  Int
+  topPatterns     String   // JSON: most common structures
+  topPowerWords   String   // JSON: most used power words
+  sentimentDist   String   // JSON: sentiment distribution
+  emotionDist     String   // JSON: emotion distribution
+  avgScore        Float
+  insights        String   // AI-generated insights text
+  createdAt       DateTime @default(now())
+}
+
+// ==========================================
+// IMAGE ORGANIZER MODELS
+// ==========================================
+
+model ImageCollection {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  totalImages Int      @default(0)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  images      Image[]
+  slideshows  Slideshow[]
+}
+
+model Image {
+  id           String   @id @default(cuid())
+  collectionId String
+  collection   ImageCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  filename     String
+  filepath     String
+  url          String?
+  width        Int?
+  height       Int?
+  // AI vision analysis
+  description  String?  // AI-generated description
+  keywords     String?  // JSON array of keywords
+  colors       String?  // JSON array of dominant colors
+  objects      String?  // JSON array of detected objects
+  mood         String?  // e.g. "energetic", "calm", "dramatic"
+  style        String?  // e.g. "photography", "illustration", "3d"
+  analyzed     Boolean  @default(false)
+  createdAt    DateTime @default(now())
+  slideshowSlots SlideshowSlot[]
+
+  @@index([collectionId])
+  @@index([analyzed])
+}
+
+model Slideshow {
+  id           String   @id @default(cuid())
+  collectionId String
+  collection   ImageCollection @relation(fields: [collectionId], references: [id], onDelete: Cascade)
+  name         String
+  description  String?
+  version      Int      @default(1)
+  parentId     String?  // for iterations - points to previous version
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  slots        SlideshowSlot[]
+
+  @@index([collectionId])
+  @@index([parentId])
+}
+
+model SlideshowSlot {
+  id          String   @id @default(cuid())
+  slideshowId String
+  slideshow   Slideshow @relation(fields: [slideshowId], references: [id], onDelete: Cascade)
+  position    Int
+  imageId     String
+  image       Image    @relation(fields: [imageId], references: [id])
+  // For replacement tracking
+  originalImageId String?
+  replacementSource String? // "pinterest", "upload", "ai-search"
+  pinterestUrl    String?
+  createdAt   DateTime @default(now())
+
+  @@index([slideshowId])
+  @@unique([slideshowId, position])
+}
